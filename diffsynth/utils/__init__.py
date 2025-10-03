@@ -195,7 +195,9 @@ class ModelConfig:
             if self.local_model_path is None:
                 self.local_model_path = "./models"
             if not skip_download:
-                downloaded_files = glob.glob(self.origin_file_pattern, root_dir=os.path.join(self.local_model_path, self.model_id))
+                # downloaded_files = glob.glob(self.origin_file_pattern, root_dir=os.path.join(self.local_model_path, self.model_id))
+                base_dir = os.path.join(self.local_model_path, self.model_id)
+                downloaded_files = glob.glob(os.path.join(base_dir, self.origin_file_pattern))
                 snapshot_download(
                     self.model_id,
                     local_dir=os.path.join(self.local_model_path, self.model_id),
@@ -250,6 +252,7 @@ class PipelineUnitRunner:
         if unit.take_over:
             # Let the pipeline unit take over this function.
             inputs_shared, inputs_posi, inputs_nega = unit.process(pipe, inputs_shared=inputs_shared, inputs_posi=inputs_posi, inputs_nega=inputs_nega)
+            
         elif unit.seperate_cfg:
             # Positive side
             processor_inputs = {name: inputs_posi.get(name_) for name, name_ in unit.input_params_posi.items()}

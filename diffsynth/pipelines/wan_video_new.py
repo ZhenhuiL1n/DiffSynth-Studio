@@ -28,7 +28,6 @@ from ..vram_management import enable_vram_management, AutoWrappedModule, AutoWra
 from ..lora import GeneralLoRALoader
 
 
-
 class WanVideoPipeline(BasePipeline):
 
     def __init__(self, device="cuda", torch_dtype=torch.bfloat16, tokenizer_path=None):
@@ -1096,15 +1095,34 @@ class WanVideoPostUnit_AnimatePoseLatents(PipelineUnit):
         return {"pose_latents": pose_latents}
 
 
+# class WanVideoPostUnit_AnimateFacePixelValues(PipelineUnit):
+#     def __init__(self):
+#         super().__init__(take_over=True)
+
+#     def process(self, pipe: WanVideoPipeline, inputs_shared, inputs_posi, inputs_nega):
+#         if inputs_shared.get("animate_face_video", None) is None:
+#             return {}
+#         inputs_posi["face_pixel_values"] = pipe.preprocess_video(inputs_shared["animate_face_video"])
+#         inputs_nega["face_pixel_values"] = torch.zeros_like(inputs_posi["face_pixel_values"]) - 1
+#         return inputs_shared, inputs_posi, inputs_nega
+
 class WanVideoPostUnit_AnimateFacePixelValues(PipelineUnit):
     def __init__(self):
         super().__init__(take_over=True)
 
-    def process(self, pipe: WanVideoPipeline, inputs_shared, inputs_posi, inputs_nega):
-        if inputs_shared.get("animate_face_video", None) is None:
-            return {}
-        inputs_posi["face_pixel_values"] = pipe.preprocess_video(inputs_shared["animate_face_video"])
-        inputs_nega["face_pixel_values"] = torch.zeros_like(inputs_posi["face_pixel_values"]) - 1
+    # keyword-only args to match the runner's call style
+    def process(self, pipe: WanVideoPipeline, *, inputs_shared, inputs_posi, inputs_nega):
+        video = inputs_shared.get("animate_face_video", None)
+        if video is None:
+            # no-op, but STILL return the triple
+            return inputs_shared, inputs_posi, inputs_nega
+
+        face_px = pipe.preprocess_video(video)  # expect a tensor (B,T,C,H,W) or similar
+
+        # Fill pos/neg; keep shapes/dtypes consistent
+        inputs_posi["face_pixel_values"] = face_px
+        inputs_nega["face_pixel_values"] = torch.full_like(face_px, -1)
+
         return inputs_shared, inputs_posi, inputs_nega
 
 
@@ -1374,7 +1392,8 @@ def model_fn_wan_video(
     x = dit.patchify(x, control_camera_latents_input)
     
     # Animate
-    x, motion_vec = animate_adapter.after_patch_embedding(x, pose_latents, face_pixel_values)
+    if animate_adapter != None:
+        x, motion_vec = animate_adapter.after_patch_embedding(x, pose_latents, face_pixel_values)
     
     # Patchify
     f, h, w = x.shape[2:]

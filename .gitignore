@@ -1,0 +1,6 @@
+__pycache__/
+data/
+data_lora/
+models/
+diffsynth.egg-info/
+*.mp4
