@@ -1,4 +1,4 @@
-import imageio, os, torch, warnings, torchvision, argparse, json
+import imageio, os, torch, warnings, torchvision, argparse, json, subprocess, sys
 from ..utils import ModelConfig
 from ..models.utils import load_state_dict
 from peft import LoraConfig, inject_adapter_in_model
@@ -478,11 +478,13 @@ class DiffusionTrainingModule(torch.nn.Module):
 
 
 class ModelLogger:
-    def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x:x):
+    def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x:x, eval_data=None, eval_data_kwargs=None):
         self.output_path = output_path
         self.remove_prefix_in_ckpt = remove_prefix_in_ckpt
         self.state_dict_converter = state_dict_converter
         self.num_steps = 0
+        self.eval_data = eval_data
+        self.eval_data_kwargs = {} if eval_data_kwargs is None else eval_data_kwargs
 
 
     def on_step_end(self, accelerator, model, save_steps=None):
@@ -500,6 +502,41 @@ class ModelLogger:
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
             accelerator.save(state_dict, path, safe_serialization=True)
+            # Optional evaluation on epoch end
+            if self.eval_data:
+                kwargs = dict(self.eval_data_kwargs)
+                val_script_path = kwargs.get("val_script_path")
+                if not val_script_path:
+                    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                    val_script_path = os.path.join(repo_root, "val_ti2v.py")
+                media_path = kwargs.get("media_path")
+                num_frames = kwargs.get("num_frames")
+                model_name = kwargs.get("model_name")
+                if not model_name:
+                    model_name = os.path.basename(self.output_path.rstrip("/"))
+                if media_path is None or num_frames is None:
+                    print("[ModelLogger] Skipping eval: 'media_path' and 'num_frames' are required in eval_data_kwargs.")
+                else:
+                    fps = kwargs.get("fps")
+                    base_out = os.path.join(self.output_path, "eval")
+                    out_dir = os.path.join(base_out, f"epoch_{epoch_id}")
+                    os.makedirs(out_dir, exist_ok=True)
+                    cmd = [
+                        sys.executable,
+                        str(val_script_path),
+                        "--media_path", str(media_path),
+                        "--n_epoch", str(epoch_id),
+                        "--num_frames", str(num_frames),
+                        "--out_path", str(out_dir),
+                        "--model_name", str(model_name),
+                    ]
+                    if fps is not None:
+                        cmd.extend(["--fps", str(fps)])
+                    print(f"[ModelLogger] Running eval: {' '.join(cmd)}")
+                    try:
+                        subprocess.run(cmd, check=True)
+                    except subprocess.CalledProcessError as e:
+                        print(f"[ModelLogger] Eval script failed with exit code {e.returncode}.")
 
 
     def on_training_end(self, accelerator, model, save_steps=None):
@@ -561,6 +598,7 @@ def launch_training_task(
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps)
                 scheduler.step()
+            break
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
     model_logger.on_training_end(accelerator, model, save_steps)
@@ -621,6 +659,10 @@ def wan_parser():
     parser.add_argument("--save_steps", type=int, default=None, help="Number of checkpoint saving invervals. If None, checkpoints will be saved every epoch.")
     parser.add_argument("--dataset_num_workers", type=int, default=0, help="Number of workers for data loading.")
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay.")
+    # eval args
+    parser.add_argument("--eval_data", default=False, action="store_true", help="Run evaluation after each epoch with val_ti2v.py.")
+    parser.add_argument("--eval_media_path", type=str, default=None, help="Path to the media for evaluation.")
+    parser.add_argument("--eval_fps", type=int, default=15, help="FPS for the evaluation.")
     return parser
 
 
