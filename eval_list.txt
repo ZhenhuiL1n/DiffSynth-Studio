@@ -13,7 +13,6 @@
 /data3/ramazan.fazylov/media/datasets/cv801/EvalSet/ID/12.png
 /data3/ramazan.fazylov/media/datasets/cv801/EvalSet/ID/13.png
 /data3/ramazan.fazylov/media/datasets/cv801/EvalSet/ID/14.png
-/data3/ramazan.fazylov/media/datasets/cv801/EvalSet/ID/15.png
 /data3/ramazan.fazylov/media/datasets/cv801/EvalSet/ID/16.png
 /data3/ramazan.fazylov/media/datasets/cv801/EvalSet/OOD/OOD_BlackWomen.jpg
 /data3/ramazan.fazylov/media/datasets/cv801/EvalSet/OOD/OOD_BlueTMan.jpg
