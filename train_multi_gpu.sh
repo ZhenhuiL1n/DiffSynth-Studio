@@ -1,4 +1,16 @@
-CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_training/train.py \
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Choose which 3 GPUs to use
+export CUDA_VISIBLE_DEVICES=0,1,2
+
+# Optional: tweak envs as you like
+export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
+
+ACC_CONFIG="./acc_config/config.yaml"
+
+accelerate launch --config_file "$ACC_CONFIG" examples/wanvideo/model_training/train.py \
   --dataset_base_path data_lora/ \
   --dataset_metadata_path data_lora/metadata.csv \
   --height 832 \
@@ -14,3 +26,4 @@ CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_training/train.py \
   --lora_target_modules "q,k,v,o,ffn.0,ffn.2" \
   --lora_rank 32 \
   --extra_inputs "input_image"
+

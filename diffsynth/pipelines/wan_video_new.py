@@ -1106,8 +1106,9 @@ class WanVideoPostUnit_AnimatePoseLatents(PipelineUnit):
 #         inputs_nega["face_pixel_values"] = torch.zeros_like(inputs_posi["face_pixel_values"]) - 1
 #         return inputs_shared, inputs_posi, inputs_nega
 
+
 class WanVideoPostUnit_AnimateFacePixelValues(PipelineUnit):
-    def __init__(self):
+    def __init__(self): 
         super().__init__(take_over=True)
 
     # keyword-only args to match the runner's call style

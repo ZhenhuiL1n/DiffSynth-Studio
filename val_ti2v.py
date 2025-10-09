@@ -14,10 +14,10 @@ pipe = WanVideoPipeline.from_pretrained(
         ModelConfig(model_id="Wan-AI/Wan2.2-TI2V-5B", origin_file_pattern="Wan2.2_VAE.pth", offload_device="cpu"),
     ],
 )
-pipe.load_lora(pipe.dit, "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/models/train/Wan2.2-TI2V-5B_lora/epoch-1.safetensors", alpha=1)
+pipe.load_lora(pipe.dit, "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/models/train/Wan2.2-TI2V-5B_lora/epoch-11.safetensors", alpha=1)
 pipe.enable_vram_management()
 
-input_image = VideoData("/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/data_lora/videos_padded/0000.mp4", height=832, width=480)[0]
+input_image = VideoData("/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/data_lora/videos/0344.mp4", height=832, width=480)[0]
 
 video = pipe(
     prompt="a rotation video of the human",
@@ -25,7 +25,7 @@ video = pipe(
     input_image=input_image,
     height=832,
     width=480,
-    num_frames=17,
+    num_frames=49,
     seed=1, tiled=True,
 )
-save_video(video, "test_lora_video_Wan2.2-TI2V-5B.mp4", fps=17, quality=5)
+save_video(video, "0124_49F_test_lora_video_Wan2.2-TI2V-5B.mp4", fps=24, quality=5)
