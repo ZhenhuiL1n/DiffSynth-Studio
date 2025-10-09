@@ -3,6 +3,7 @@ from diffsynth import load_state_dict
 from diffsynth.pipelines.wan_video_new import WanVideoPipeline, ModelConfig
 from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser
 from diffsynth.trainers.unified_dataset import UnifiedDataset, LoadVideo, ImageCropAndResize, ToAbsolutePath
+from pathlib import Path
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -125,8 +126,21 @@ if __name__ == "__main__":
         max_timestep_boundary=args.max_timestep_boundary,
         min_timestep_boundary=args.min_timestep_boundary,
     )
+
+    if args.eval_data:
+        eval_data_kwargs = {
+            "val_script_path": str(os.path.abspath(__file__).replace("examples/wanvideo/model_training/train.py", "val_ti2v.py")),
+            "media_path": args.eval_media_path,
+            "fps": args.eval_fps,
+            "num_frames": args.num_frames,
+        }
+    else:
+        eval_data_kwargs = None
+
     model_logger = ModelLogger(
         args.output_path,
-        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt
+        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+        eval_data=args.eval_data,
+        eval_data_kwargs=eval_data_kwargs,
     )
     launch_training_task(dataset, model, model_logger, args=args)

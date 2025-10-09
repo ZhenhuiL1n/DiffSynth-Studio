@@ -4,3 +4,4 @@ data_lora/
 models/
 diffsynth.egg-info/
 *.mp4
+eval_set
