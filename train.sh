@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_training/train.py \
+CUDA_VISIBLE_DEVICES=5 python examples/wanvideo/model_training/train.py \
   --dataset_base_path data_lora/ \
   --dataset_metadata_path data_lora/metadata.csv \
   --height 832 \
@@ -9,8 +9,8 @@ CUDA_VISIBLE_DEVICES=1 python examples/wanvideo/model_training/train.py \
   --learning_rate 1e-4 \
   --num_epochs 20 \
   --remove_prefix_in_ckpt "pipe.dit." \
-  --output_path "./models/train/Wan2.2-TI2V-5B_lora" \
+  --output_path "./models/train/Wan2.2-TI2V-5B_lora+face" \
   --lora_base_model "dit" \
   --lora_target_modules "q,k,v,o,ffn.0,ffn.2" \
   --lora_rank 32 \
-  --extra_inputs "input_image"
+  --extra_inputs "input_image" \

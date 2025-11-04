@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 # Choose which 3 GPUs to use
-export CUDA_VISIBLE_DEVICES=0,1,2
+export CUDA_VISIBLE_DEVICES=0,5
 
 # Optional: tweak envs as you like
 export TOKENIZERS_PARALLELISM=false

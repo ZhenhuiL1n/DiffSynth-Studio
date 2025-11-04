@@ -586,8 +586,8 @@ def launch_training_task(
     )
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
-    for epoch_id in range(num_epochs):
-        for data in tqdm(dataloader):
+    for epoch_id in tqdm(range(1, num_epochs+1), desc="Epoch", disable=accelerator.is_local_main_process==False, leave=False):
+        for data in tqdm(dataloader, desc="Iteration", disable=accelerator.is_local_main_process==False, leave=False):
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
                 if dataset.load_from_cache:

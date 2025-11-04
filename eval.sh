@@ -1,1 +1,1 @@
-python val_ti2v.py --media_path ./eval_list.txt  --n_epoch 13 --fps 24 --num_frames 49 --out_path ./out
+TOKENIZERS_PARALLELISM=true python val_ti2v.py --media_path ./eval_list_face.txt  --n_epoch 6 --fps 24 --num_frames 49 --out_path ./out_face --model_name Wan2.2-TI2V-5B_lora+face
