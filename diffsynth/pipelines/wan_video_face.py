@@ -10,7 +10,7 @@ from einops import rearrange
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
-from typing import Optional
+from typing import Optional, List, Union
 from typing_extensions import Literal
 
 from ..utils import BasePipeline, ModelConfig, PipelineUnit, PipelineUnitRunner
@@ -27,6 +27,7 @@ from ..schedulers.flow_match import FlowMatchScheduler
 from ..prompters import WanPrompter
 from ..vram_management import enable_vram_management, AutoWrappedModule, AutoWrappedLinear, WanAutoCastLayerNorm
 from ..lora import GeneralLoRALoader
+from .wan_video_ipadapter import WanVideoIPAdapter, IPAdapterContextBridge
 
 
 class WanVideoPipeline(BasePipeline):
@@ -86,6 +87,10 @@ class WanVideoPipeline(BasePipeline):
         self.lpips_loss_fn.to(self.device)
         self.lpips_loss_fn.eval()
         
+        self.ipadapter = None
+        self.ipadapter_scale = 0.0
+        self.ipadapter_num_tokens = 16
+        
     def _build_face_detector(self, det_size=(1024,1024)):
         try:
             local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -98,6 +103,116 @@ class WanVideoPipeline(BasePipeline):
         )
         app.prepare(ctx_id=local_rank, det_size=det_size)
         return app
+    
+    def enable_ipadapter(
+        self,
+        clip_vision_model: str = "openai/clip-vit-large-patch14",
+        ipadapter_weight_path: str = "models/IpAdapter/stable_diffusion_xl/ip-adapter_sdxl.safetensors",
+        num_tokens: int = 16,
+        scale: float = 0.6,
+    ):
+        # WAN uses 1280-d `clip_feature` tokens (see wan_video.py).
+        self.ipadapter = WanVideoIPAdapter(
+            device=self.device,
+            torch_dtype=self.torch_dtype,
+            clip_vision_model=clip_vision_model,
+            num_tokens=num_tokens,
+            cross_attention_dim=1280,
+            ipadapter_weight_path=ipadapter_weight_path,
+        )
+        self.ipadapter.set_scale(scale)
+        self.ipadapter_scale = scale
+        self.ipadapter_num_tokens = num_tokens
+        self.ipadapter.eval()
+        
+    def enable_ipadapter_context(
+        self,
+        clip_vision_model: str = "openai/clip-vit-large-patch14",
+        ipadapter_weight_path: str = "models/IpAdapter/sdxl/ip-adapter_sdxl.safetensors",
+        num_tokens: int = 16,
+        scale: float = 0.6,
+        freeze_vision: bool = True,
+        freeze_projector: bool = True,
+    ):
+        # WAN text token dim (e.g., 4096). Safer to read from the model:
+        text_dim = int(self.dit.text_embedding[0].in_features)  # Linear(text_dim -> dim)
+        self.ip_ctx = IPAdapterContextBridge(
+            text_dim=text_dim,
+            device=self.device,
+            torch_dtype=self.torch_dtype,
+            clip_vision_model=clip_vision_model,
+            num_tokens=num_tokens,
+            cross_attention_dim=1280,
+            ipadapter_weight_path=ipadapter_weight_path,
+            freeze_vision=freeze_vision,
+            freeze_projector=freeze_projector,
+        )
+        self.ip_ctx.set_scale(scale)
+        self.ip_ctx_scale = scale
+        self.ip_ctx_num_tokens = num_tokens
+        # self.ip_ctx.eval()
+        
+    @torch.no_grad()
+    def _append_ipadapter_tokens(
+        self,
+        clip_feature: torch.Tensor,
+        ip_images: List[Image.Image],
+        t_sigma: torch.Tensor = None,
+        t_gate_range=(0.0, 0.3),
+    ) -> torch.Tensor:
+        """
+        Appends IP-Adapter tokens to existing WAN `clip_feature`.
+        - clip_feature: [B, Lc, 1280]
+        - returns:      [B, Lc + N, 1280]
+        Optional `t_sigma`: per-step noise (sigma) to gate IP-Adapter strength at low noise.
+        """
+        if self.ipadapter is None or self.ipadapter_scale <= 0.0 or not ip_images:
+            return clip_feature
+
+        ipa = self.ipadapter.encode(ip_images).to(dtype=clip_feature.dtype, device=clip_feature.device)  # [B, N, 1280]
+
+        # Optional: gate by sigma so IP-Adapter is strongest late in denoising
+        if t_sigma is not None:
+            # linear gate: 1.0 at sigma<=t_gate_range[0], 0.0 at sigma>=t_gate_range[1]
+            lo, hi = t_gate_range
+            g = (hi - t_sigma.clamp(min=lo, max=hi)) / max(hi - lo, 1e-6)
+            g = g.clamp(0, 1).view(-1, 1, 1)  # [B,1,1]
+            ipa = ipa * g
+
+        return torch.cat([clip_feature, ipa], dim=1)
+    
+    @torch.no_grad()
+    def _append_ip_to_context(
+        self,
+        context: torch.Tensor,               # [B_ctx, L, text_dim]
+        ip_images: list,                     # list[PIL.Image]
+        t_sigma: torch.Tensor = None,        # [B] (from scheduler sigmas)
+        t_gate_range=(0.0, 0.30),            # active near low noise
+    ) -> torch.Tensor:
+        if (self.ip_ctx is None) or (self.ip_ctx_scale <= 0.0) or (not ip_images):
+            return context
+
+        ipa = self.ip_ctx.encode_to_text(ip_images)  # [B_ipa, N, text_dim]
+        ipa = ipa.to(device=context.device, dtype=context.dtype)
+
+        # If batch sizes differ (CFG or batching), repeat IPA across batch.
+        B_ctx, _, _ = context.shape
+        B_ipa = ipa.shape[0]
+        if B_ipa == 1 and B_ctx > 1:
+            ipa = ipa.repeat(B_ctx, 1, 1)
+        elif B_ipa != B_ctx:
+            ipa = ipa[:B_ctx]
+
+        # Optional: gate by noise sigma so guidance is strongest at late steps.
+        if t_sigma is not None:
+            lo, hi = t_gate_range
+            g = (hi - t_sigma.clamp(min=lo, max=hi)) / max(hi - lo, 1e-6)
+            g = g.clamp(0, 1).view(-1, 1, 1)         # [B,1,1]
+            ipa = ipa * g
+
+        # Prepend IPA tokens so they get high attention priority.
+        return torch.cat([ipa, context], dim=1)
+
     
     def load_lora(
         self,
@@ -382,12 +497,50 @@ class WanVideoPipeline(BasePipeline):
         tgt_full = self.scheduler.training_target(inputs["input_latents"], inputs["noise"], timestep)
 
         # breakpoint()
+        # breakpoint()
+        # --- IP-Adapter → context injection (works even when clip_feature is absent) ---
+        if "context" in inputs and self.ip_ctx is not None and self.ip_ctx_scale > 0.0:
+            # Use explicit ipadapter_images if provided; otherwise reuse detected face crops.
+            ip_imgs = inputs.get("ipadapter_images") or inputs.get("face_masked_images") or []
+            if isinstance(ip_imgs, Image.Image):
+                ip_imgs = [ip_imgs]
+
+            # per-step sigma for gating
+            t_sigma = self._sigma_from_timestep_id(timestep_id).to(inputs["context"].device)
+            inputs["context"] = self._append_ip_to_context(inputs["context"], ip_imgs, t_sigma=t_sigma)
+# -------------------------------------------------------------------------------
+
+        # cond_text = self.encode_prompt(prompt, positive=True)        # {"context": ...}
+        # cond_img  = self.encode_image(image, end_image, T, H, W, ...)# {"clip_feature": ..., "y": ...}
+        # clip_feature, y = cond_img["clip_feature"], cond_img["y"]
+        # # Add IP-Adapter tokens into clip_feature (decode-free, tiny VRAM)
+        # if ipadapter_images is not None and len(ipadapter_images) > 0:
+        #     # ipadapter_images: List[PIL.Image.Image], typically your face crops or a single identity image
+        #     # Optional: t_sigma from your scheduler/noise for gating (if you have it at this point)
+        #     t_sigma = None
+        #     if isinstance(t, torch.Tensor) and hasattr(self.scheduler, "sigma"):
+        #         t_sigma = self.scheduler.sigma(t).to(clip_feature.device).view(clip_feature.shape[0])
+
+        #     clip_feature = self._append_ipadapter_tokens(
+        #         clip_feature, ipadapter_images, t_sigma=t_sigma
+        #     )
         # face_target = self.scheduler.training_target(inputs["face_latents"], inputs["noise"], timestep) 
         noise_pred = self.model_fn(**inputs, timestep=timestep)
         
+        # noise_pred = self.model_fn(
+        #     **inputs, timestep=timestep,
+        #     context=cond_text["context"],    # text tokens
+        #     clip_feature=clip_feature,       # NOW includes IP-Adapter tokens
+        #     y=y,                             # WAN latent video cond
+        #     # timestep=t,
+        # )
+        
         loss = torch.nn.functional.mse_loss(noise_pred.float(), tgt_full.float())
-        loss = loss * self.scheduler.training_weight(timestep)
+        loss = loss * self.scheduler.training_weight(timestep)            
+            
         if "face_latents" in inputs and inputs["face_latents"] is not None:
+            base_err = F.mse_loss(noise_pred.float(), tgt_full.float(), reduction='none')  # [B,C,T,Hl,Wl]
+            per_loc  = base_err.mean(dim=1, keepdim=True)
             # delta is large where background was zeroed, small on the face
             delta = (inputs["input_latents"] - inputs["face_latents"]).float()             # [B,Cz,T,Hl,Wl]
             d2 = delta.pow(2).mean(dim=1, keepdim=True)                                 # [B,1,T,Hl,Wl]
@@ -402,7 +555,7 @@ class WanVideoPipeline(BasePipeline):
             gate  = (1.0 - sigma.clamp(0,1)).view(1,1,1,1,1)                                # scale ∈[0,1]
 
             alpha = float(inputs.get("face_weight", 1))
-            face_loss = (loss * W_face).sum() / (W_face.sum() * noise_pred.shape[1]).clamp_min(1.0) # area-normalized
+            face_loss = (per_loc * W_face).sum() / (W_face.sum()).clamp_min(1.0) # area-normalized     * noise_pred.shape[1]
             loss = loss + alpha * gate * self.scheduler.training_weight(timestep) * face_loss
         
         # loss_face = torch.nn.functional.mse_loss(noise_pred.float(), face_target.float())
@@ -1058,7 +1211,7 @@ class WanVideoUnit_FaceBBox(PipelineUnit):
         arr = np.array(img_pil, dtype=np.uint8) # RGB HxWx3
         return arr[..., ::-1].copy()            # BGR
     
-    def _make_face_only_video(self, frames, face_boxes, expand: int = 0, fill=(0, 0, 0)):
+    def _make_face_masked_video(self, frames, face_boxes, expand: int = 0, fill=(0, 0, 0)):
         """Return a list of PIL RGB frames where only the detected face region is kept,
         the rest is black. Uses per-frame bboxes; if multiple boxes, unions them.
         """
@@ -1093,6 +1246,68 @@ class WanVideoUnit_FaceBBox(PipelineUnit):
             black = Image.new("RGB", (w, h), fill)
             out.append(Image.composite(img, black, mask))
         return out
+    
+    def _make_face_only_video(self, frames, face_boxes, expand: int = 0, out_size: int = 256):
+        """
+        Return a list of 256x256 RGBA frames with only the face region kept.
+        - Unions multiple boxes per frame.
+        - Crops to the (expanded) bbox, preserves aspect, pads with transparency.
+        - If no detection on a frame, reuses the last valid box; otherwise outputs empty.
+        """
+        from PIL import Image
+
+        out = []
+        last_box = None
+
+        for t, img in enumerate(frames):
+            w, h = img.size
+            box = None
+
+            # Resolve bbox (union if multiple)
+            if face_boxes is not None and t < len(face_boxes):
+                b = face_boxes[t]
+                if b is not None:
+                    if isinstance(b[0], (list, tuple)):
+                        xs = [bb[0] for bb in b]; ys = [bb[1] for bb in b]
+                        xe = [bb[2] for bb in b]; ye = [bb[3] for bb in b]
+                        x1, y1, x2, y2 = min(xs), min(ys), max(xe), max(ye)
+                    else:
+                        x1, y1, x2, y2 = b
+
+                    # Expand + clamp
+                    x1 = max(0, int(x1 - expand)); y1 = max(0, int(y1 - expand))
+                    x2 = min(w, int(x2 + expand)); y2 = min(h, int(y2 + expand))
+                    if x2 > x1 and y2 > y1:
+                        box = (x1, y1, x2, y2)
+
+            if box is None:
+                box = last_box
+
+            if box is None:
+                # No detection yet → transparent 256x256
+                out.append(Image.new("RGBA", (out_size, out_size), (0, 0, 0, 0)))
+                continue
+
+            last_box = box
+
+            # Crop to face bbox
+            crop = img.crop(box).convert("RGBA")
+            cw, ch = crop.size
+
+            # Fit inside 256x256 with padding (no distortion)
+            scale = min(out_size / cw, out_size / ch)
+            nw, nh = max(1, int(round(cw * scale))), max(1, int(round(ch * scale)))
+            crop_resized = crop.resize((nw, nh), Image.BICUBIC)
+
+            canvas = Image.new("RGBA", (out_size, out_size), (0, 0, 0, 0))
+            x_off = (out_size - nw) // 2
+            y_off = (out_size - nh) // 2
+            canvas.paste(crop_resized, (x_off, y_off), crop_resized)
+
+            out.append(canvas)
+
+        return out
+
 
     @torch.no_grad()
     def process(self, pipe, input_video=None, video=None, height=None, width=None, num_frames=None):
@@ -1155,20 +1370,28 @@ class WanVideoUnit_FaceBBox(PipelineUnit):
 
         # Use the pipeline helper to keep only the face region per frame
         # (falls back to last valid box per frame if a frame has no detection)
-        face_masked_images = self._make_face_only_video(
+        face_masked_images_to_encode = self._make_face_masked_video(
             frames=frames_pil,
             face_boxes=face_boxes,
             expand=0,           # tweak if you want padding around the face
             fill=(0, 0, 0)      # black background
         )  #
         
+        face_masked_images = self._make_face_only_video(
+            frames=frames_pil,
+            face_boxes=face_boxes,
+            expand=0,           # tweak if you want padding around the face
+            out_size=256      # output size
+        )
+        
         # for i, image in enumerate(face_masked_images):
-        #     image.save(f'debug_faces_{i}.png')
+        #     image.save(f'debug/debug_faces_{i}.png')
         return dict(
             face_boxes=face_boxes,
             face_rois=face_rois,
             face_source_size=(H, W),
             face_masked_images=face_masked_images,
+            face_masked_images_to_encode=face_masked_images_to_encode,
         )
 
 
@@ -1203,19 +1426,19 @@ class WanVideoUnit_NoiseInitializer(PipelineUnit):
 class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("input_video", "face_masked_images", "noise", "tiled", "tile_size", "tile_stride", "vace_reference_image"),
+            input_params=("input_video", "face_masked_images_to_encode", "noise", "tiled", "tile_size", "tile_stride", "vace_reference_image"),
             onload_model_names=("vae",)
         )
 
-    def process(self, pipe: WanVideoPipeline, input_video, face_masked_images, noise, tiled, tile_size, tile_stride, vace_reference_image):
+    def process(self, pipe: WanVideoPipeline, input_video, face_masked_images_to_encode, noise, tiled, tile_size, tile_stride, vace_reference_image):
         if input_video is None:
             return {"latents": noise}
         pipe.load_models_to_device(["vae"])
         input_video = pipe.preprocess_video(input_video)
-        face_video = pipe.preprocess_video(face_masked_images)
+        face_video = pipe.preprocess_video(face_masked_images_to_encode)
         input_latents = pipe.vae.encode(input_video, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
         face_latents = pipe.vae.encode(face_video, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device) 
-        
+        # face_latents = None
         if vace_reference_image is not None:
             if not isinstance(vace_reference_image, list):
                 vace_reference_image = [vace_reference_image]
