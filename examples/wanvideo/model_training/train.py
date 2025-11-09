@@ -25,6 +25,19 @@ class WanTrainingModule(DiffusionTrainingModule):
         model_configs = self.parse_model_configs(model_paths, model_id_with_origin_paths, enable_fp8_training=False)
         self.pipe = WanVideoPipeline.from_pretrained(torch_dtype=torch.bfloat16, device="cpu", model_configs=model_configs)
         
+        # # enable IP-Adapter (use SDXL projector weights -> 1280 dims)
+        # self.pipe.enable_ipadapter(
+        #     clip_vision_model="openai/clip-vit-large-patch14",
+        #     ipadapter_weight_path="models/IpAdapter/stable_diffusion_xl/ip-adapter_sdxl.safetensors",
+        #     num_tokens=16,
+        #     scale=0.6,   # 0.3–0.8 typical; tune per dataset
+        # )
+        self.pipe.enable_ipadapter_context(
+            clip_vision_model="openai/clip-vit-large-patch14",
+            ipadapter_weight_path="models/IpAdapter/sdxl/ip-adapter_sdxl.safetensors",
+            num_tokens=16,
+            scale=0.6,
+        )
         # Training mode
         self.switch_pipe_to_training_mode(
             self.pipe, trainable_models,
@@ -44,7 +57,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         # CFG-sensitive parameters
         inputs_posi = {"prompt": data["prompt"]}
         inputs_nega = {}
-        
+
         # CFG-unsensitive parameters
         inputs_shared = {
             # Assume you are using this pipeline for inference,
