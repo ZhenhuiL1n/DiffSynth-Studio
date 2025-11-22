@@ -49,22 +49,22 @@ pipe = WanVideoPipeline.from_pretrained(
 # Load your LoRA (adjust path as needed)
 pipe.load_lora(
     pipe.dit,
-    "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/models/train/Wan2.2-TI2V-5B_lora/epoch-3.safetensors",
+    "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/models/train/805_baseline_bodyonly/epoch-5.safetensors",
     alpha=1
 )
 pipe.enable_vram_management()
 
 # ---------- user inputs ----------
 # Use a local file OR a URL
-image_source = "/path/to/any_wild_image.jpg"
+image_source = "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/body.png"
 # image_source = "https://example.com/some_image.jpg"
 
-H, W = 832, 480  # keep multiples of 16; this matches your training/eval
+H, W = 512, 512  # keep multiples of 16; this matches your training/eval
 input_image = load_image_fit(image_source, target_w=W, target_h=H, keep_aspect=True)
 
 # ---------- inference ----------
 video = pipe(
-    prompt="a rotation video of the human",
+    prompt="a smooth 360-degree rotation video of a human head and body, centered, neutral pose, consistent lighting, clean background, steady camera orbit",
     negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
     input_image=input_image,   # <- pass the PIL image directly
     height=H,
@@ -74,6 +74,6 @@ video = pipe(
     tiled=True,
 )
 
-out_path = "wild_image_49F_Wan2.2-TI2V-5B_lora.mp4"
+out_path = "head_out_body_ep5.mp4"
 save_video(video, out_path, fps=24, quality=5)
 print(f"Saved to {out_path}")

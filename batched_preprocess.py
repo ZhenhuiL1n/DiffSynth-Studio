@@ -22,7 +22,6 @@ import os
 import sys
 import concurrent.futures
 from typing import Iterable, List, Tuple
-
 import numpy as np
 from PIL import Image, ImageOps
 

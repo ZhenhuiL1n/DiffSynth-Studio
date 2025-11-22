@@ -1,1 +1,1 @@
-python val_ti2v.py --media_path ./eval_list.txt  --n_epoch 13 --fps 24 --num_frames 49 --out_path ./out
+python val_ti2v.py --media_path ./eval_list.txt  --n_epoch 3 --fps 24 --num_frames 49 --out_path ./out

@@ -5,3 +5,4 @@ models/
 diffsynth.egg-info/
 *.mp4
 eval_set
+checkpoints/
