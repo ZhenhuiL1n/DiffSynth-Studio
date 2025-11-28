@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--lora_path",
-        default="/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/models/train/805_mixed/epoch-5.safetensors",
+        default="/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/models/train/Wan2.2-TI2V-5B_lora_distillation/epoch-1.safetensors",
         help="Path to the mixed-training LoRA checkpoint.",
     )
     parser.add_argument("--lora_alpha", type=float, default=1.0, help="LoRA alpha.")
@@ -52,12 +52,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--head_output_root",
-        default="out/mixed/head_eval",
+        default="out/mixed/head_eval_kl",
         help="Where to save head evaluation videos (split subfolders will be created).",
     )
     parser.add_argument(
         "--body_output_root",
-        default="out/mixed/body_eval",
+        default="out/mixed/body_eval_kl",
         help="Where to save body evaluation videos (split subfolders will be created).",
     )
     parser.add_argument(

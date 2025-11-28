@@ -1,0 +1,15 @@
+{
+  "gt": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/GT/head",
+  "pred": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/out/memory_replay__vs__baseline__mp4s/805_body__on_head_replay_v1/head_eval/in_dist",
+  "num_frames": 49,
+  "force_size": [
+    768,
+    768
+  ],
+  "metrics": {
+    "PSNR": 20.91027704967988,
+    "SSIM": 0.7601812536434841,
+    "LPIPS": 0.28948912974135993,
+    "CSIM": 0.8482750645558187
+  }
+}

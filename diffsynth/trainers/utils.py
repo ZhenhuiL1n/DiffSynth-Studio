@@ -366,7 +366,14 @@ class VideoDataset(torch.utils.data.Dataset):
 class DiffusionTrainingModule(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        
+        self.ewc_lambda = 0.0
+        self.ewc_fisher = None
+        self.ewc_prev_params = None
+        self.ewc_compute_fisher_only = False
+        self.ewc_fisher_output_path = None
+        self.ewc_prev_params_output_path = None
+        self._ewc_fisher_accumulator = None
+        self._ewc_sample_count = 0
         
     def to(self, *args, **kwargs):
         for name, model in self.named_children():
@@ -477,6 +484,95 @@ class DiffusionTrainingModule(torch.nn.Module):
             setattr(pipe, lora_base_model, model)
 
 
+    def configure_ewc(
+        self,
+        ewc_lambda=0.0,
+        fisher_path=None,
+        prev_param_path=None,
+        compute_fisher_only=False,
+        fisher_output_path=None,
+        param_output_path=None,
+    ):
+        self.ewc_lambda = ewc_lambda
+        self.ewc_compute_fisher_only = compute_fisher_only
+        self.ewc_fisher_output_path = fisher_output_path
+        self.ewc_prev_params_output_path = param_output_path
+        if not compute_fisher_only and fisher_path is not None and os.path.exists(fisher_path):
+            self.ewc_fisher = torch.load(fisher_path, map_location="cpu")
+        else:
+            self.ewc_fisher = None
+        if not compute_fisher_only and prev_param_path is not None and os.path.exists(prev_param_path):
+            self.ewc_prev_params = torch.load(prev_param_path, map_location="cpu")
+        else:
+            self.ewc_prev_params = None
+        if compute_fisher_only:
+            self._ewc_fisher_accumulator = {}
+            self._ewc_sample_count = 0
+        else:
+            self._ewc_fisher_accumulator = None
+            self._ewc_sample_count = 0
+
+
+    def ewc_penalty(self):
+        if self.ewc_lambda <= 0 or self.ewc_fisher is None or self.ewc_prev_params is None:
+            return 0.0
+        penalty = None
+        for name, param in self.named_parameters():
+            if name not in self.ewc_fisher:
+                continue
+            fisher = self.ewc_fisher[name].to(param.device)
+            prev_param = self.ewc_prev_params[name].to(param.device, dtype=param.dtype)
+            diff = param - prev_param
+            term = (fisher.to(param.device, dtype=param.dtype) * diff.pow(2)).sum()
+            penalty = term if penalty is None else penalty + term
+        if penalty is None:
+            return 0.0
+        return 0.5 * self.ewc_lambda * penalty
+
+
+    def accumulate_fisher(self):
+        if not self.ewc_compute_fisher_only or self._ewc_fisher_accumulator is None:
+            return
+        self._ewc_sample_count += 1
+        for name, param in self.named_parameters():
+            if param.grad is None:
+                continue
+            grad_sq = param.grad.detach().cpu().pow(2)
+            if name in self._ewc_fisher_accumulator:
+                self._ewc_fisher_accumulator[name] += grad_sq
+            else:
+                self._ewc_fisher_accumulator[name] = grad_sq.clone()
+
+
+    def save_ewc_state(self):
+        if not self.ewc_compute_fisher_only or self._ewc_fisher_accumulator is None:
+            return
+        if self._ewc_sample_count == 0:
+            print("[EWC] No samples processed; skipping Fisher save.")
+            return
+        fisher = {
+            name: value / float(self._ewc_sample_count)
+            for name, value in self._ewc_fisher_accumulator.items()
+        }
+        if self.ewc_fisher_output_path is not None:
+            parent = os.path.dirname(self.ewc_fisher_output_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            torch.save(fisher, self.ewc_fisher_output_path)
+            print(f"[EWC] Fisher matrix saved to {self.ewc_fisher_output_path}")
+        if self.ewc_prev_params_output_path is not None:
+            parent = os.path.dirname(self.ewc_prev_params_output_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            params = {
+                name: param.detach().cpu()
+                for name, param in self.named_parameters()
+                if param.requires_grad
+            }
+            torch.save(params, self.ewc_prev_params_output_path)
+            print(f"[EWC] Reference parameters saved to {self.ewc_prev_params_output_path}")
+
+
 class ModelLogger:
     def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x:x, eval_data=None, eval_data_kwargs=None):
         self.output_path = output_path
@@ -585,6 +681,7 @@ def launch_training_task(
         kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=find_unused_parameters)],
     )
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+    unwrapped_model = accelerator.unwrap_model(model)
     
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
@@ -595,12 +692,18 @@ def launch_training_task(
                 else:
                     loss = model(data)
                 accelerator.backward(loss)
-                optimizer.step()
-                model_logger.on_step_end(accelerator, model, save_steps)
-                scheduler.step()
-        if save_steps is None:
+                if unwrapped_model.ewc_compute_fisher_only:
+                    unwrapped_model.accumulate_fisher()
+                else:
+                    optimizer.step()
+                    model_logger.on_step_end(accelerator, model, save_steps)
+                    scheduler.step()
+        if not unwrapped_model.ewc_compute_fisher_only and save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
-    model_logger.on_training_end(accelerator, model, save_steps)
+    if unwrapped_model.ewc_compute_fisher_only:
+        unwrapped_model.save_ewc_state()
+    else:
+        model_logger.on_training_end(accelerator, model, save_steps)
 
 
 def launch_data_process_task(
@@ -658,6 +761,10 @@ def wan_parser():
     parser.add_argument("--save_steps", type=int, default=None, help="Number of checkpoint saving invervals. If None, checkpoints will be saved every epoch.")
     parser.add_argument("--dataset_num_workers", type=int, default=0, help="Number of workers for data loading.")
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay.")
+    parser.add_argument("--ewc_lambda", type=float, default=0.0, help="Weight of the EWC regularization term.")
+    parser.add_argument("--ewc_fisher", type=str, default=None, help="Path to the Fisher matrix (load or save depending on mode).")
+    parser.add_argument("--ewc_prev_params", type=str, default=None, help="Path to the reference parameters (load or save depending on mode).")
+    parser.add_argument("--ewc_compute_fisher_only", action="store_true", help="Only compute Fisher/parameter stats without updating the model.")
     # eval args
     parser.add_argument("--eval_data", default=False, action="store_true", help="Run evaluation after each epoch with val_ti2v.py.")
     parser.add_argument("--eval_media_path", type=str, default=None, help="Path to the media for evaluation.")

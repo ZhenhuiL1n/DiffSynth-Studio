@@ -1,0 +1,33 @@
+{
+  "experiment": "ewc",
+  "results": [
+    {
+      "label": "body",
+      "mode": "in_dist",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/ewc/body/in_dist",
+      "gt_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/GT/body",
+      "FVD": 21.683726304595837
+    },
+    {
+      "label": "body",
+      "mode": "ood",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/ewc/body/ood",
+      "gt_stats": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/eva_scripts/body_stats_768.npz",
+      "FVD": 81.1393054339329
+    },
+    {
+      "label": "head",
+      "mode": "in_dist",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/ewc/head/in_dist",
+      "gt_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/GT/head",
+      "FVD": 17.960687336956468
+    },
+    {
+      "label": "head",
+      "mode": "ood",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/ewc/head/ood",
+      "gt_stats": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/eva_scripts/head_stats_768.npz",
+      "FVD": 62.3250372278426
+    }
+  ]
+}

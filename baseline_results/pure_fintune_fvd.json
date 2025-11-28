@@ -1,0 +1,33 @@
+{
+  "experiment": "pure_fintune",
+  "results": [
+    {
+      "label": "body",
+      "mode": "in_dist",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/pure_fintune/body/in_dist",
+      "gt_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/GT/body",
+      "FVD": 12.643791942946763
+    },
+    {
+      "label": "body",
+      "mode": "ood",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/pure_fintune/body/ood",
+      "gt_stats": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/eva_scripts/body_stats_768.npz",
+      "FVD": 61.16280945182745
+    },
+    {
+      "label": "head",
+      "mode": "in_dist",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/pure_fintune/head/in_dist",
+      "gt_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/GT/head",
+      "FVD": 16.53704278980173
+    },
+    {
+      "label": "head",
+      "mode": "ood",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/pure_fintune/head/ood",
+      "gt_stats": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/eva_scripts/head_stats_768.npz",
+      "FVD": 58.45535906248659
+    }
+  ]
+}

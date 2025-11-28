@@ -1,0 +1,22 @@
+{
+  "results": [
+    {
+      "label": "body",
+      "gt_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/GT/body",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/seq_finetune/body/in_dist",
+      "PSNR": 18.95965647123958,
+      "SSIM": 0.8040272904537161,
+      "LPIPS": 0.19130538076162337,
+      "CSIM": 0.8898861100479049
+    },
+    {
+      "label": "head",
+      "gt_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/GT/head",
+      "pred_dir": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/EWC_experiment/seq_finetune/head/in_dist",
+      "PSNR": 22.129099273979314,
+      "SSIM": 0.7909391843837651,
+      "LPIPS": 0.2697719727690639,
+      "CSIM": 0.8664363088361554
+    }
+  ]
+}

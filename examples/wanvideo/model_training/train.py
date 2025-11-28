@@ -1,5 +1,4 @@
 import torch, os, json
-from diffsynth import load_state_dict
 from diffsynth.pipelines.wan_video_new import WanVideoPipeline, ModelConfig
 from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser
 from diffsynth.trainers.unified_dataset import UnifiedDataset, LoadVideo, ImageCropAndResize, ToAbsolutePath
@@ -19,6 +18,10 @@ class WanTrainingModule(DiffusionTrainingModule):
         extra_inputs=None,
         max_timestep_boundary=1.0,
         min_timestep_boundary=0.0,
+        ewc_lambda=0.0,
+        ewc_fisher=None,
+        ewc_prev_params=None,
+        ewc_compute_fisher_only=False,
     ):
         super().__init__()
         # Load models
@@ -38,6 +41,14 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
         self.max_timestep_boundary = max_timestep_boundary
         self.min_timestep_boundary = min_timestep_boundary
+        self.configure_ewc(
+            ewc_lambda=ewc_lambda,
+            fisher_path=None if ewc_compute_fisher_only else ewc_fisher,
+            prev_param_path=None if ewc_compute_fisher_only else ewc_prev_params,
+            compute_fisher_only=ewc_compute_fisher_only,
+            fisher_output_path=ewc_fisher if ewc_compute_fisher_only else None,
+            param_output_path=ewc_prev_params if ewc_compute_fisher_only else None,
+        )
         
         
     def forward_preprocess(self, data):
@@ -87,6 +98,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         if inputs is None: inputs = self.forward_preprocess(data)
         models = {name: getattr(self.pipe, name) for name in self.pipe.in_iteration_models}
         loss = self.pipe.training_loss(**models, **inputs)
+        loss = loss + self.ewc_penalty()
         return loss
 
 
@@ -125,6 +137,10 @@ if __name__ == "__main__":
         extra_inputs=args.extra_inputs,
         max_timestep_boundary=args.max_timestep_boundary,
         min_timestep_boundary=args.min_timestep_boundary,
+        ewc_lambda=args.ewc_lambda,
+        ewc_fisher=args.ewc_fisher,
+        ewc_prev_params=args.ewc_prev_params,
+        ewc_compute_fisher_only=args.ewc_compute_fisher_only,
     )
 
     if args.eval_data:

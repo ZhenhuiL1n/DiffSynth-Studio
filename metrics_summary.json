@@ -1,0 +1,55 @@
+{
+  "results": [
+    {
+      "experiment": "bodys_eval/in_dist",
+      "pred_dir": "out/bodys_eval/in_dist",
+      "gt_label": "body",
+      "PSNR": 16.408265844461415,
+      "SSIM": 0.7601303702471207,
+      "LPIPS": 0.21657789763139218,
+      "CSIM": 0.8585625888376821
+    },
+    {
+      "experiment": "forgetting/head_eval_on_head_to_body/in_dist",
+      "pred_dir": "out/forgetting/head_eval_on_head_to_body/in_dist",
+      "gt_label": "head",
+      "PSNR": 21.287530830023304,
+      "SSIM": 0.8024787288354958,
+      "LPIPS": 0.29526983781607713,
+      "CSIM": 0.8502612433171081
+    },
+    {
+      "experiment": "mixed/body_eval/in_dist",
+      "pred_dir": "out/mixed/body_eval/in_dist",
+      "gt_label": "body",
+      "PSNR": 16.310846924430145,
+      "SSIM": 0.7590901032880859,
+      "LPIPS": 0.2180389016775452,
+      "CSIM": 0.8584429746501299
+    },
+    {
+      "experiment": "mixed/head_eval/in_dist",
+      "pred_dir": "out/mixed/head_eval/in_dist",
+      "gt_label": "head",
+      "PSNR": 22.107495166931642,
+      "SSIM": 0.8031348332477043,
+      "LPIPS": 0.291226588281755,
+      "CSIM": 0.853601842363012
+    }
+  ],
+  "errors": [
+    {
+      "pred_dir": "out/forgetting/body_eval_on_body_to_head/in_dist",
+      "error": "No video pairs found. Check filenames and extensions."
+    },
+    {
+      "pred_dir": "out/heads_eval/in_dist",
+      "error": "GT dir (video) and pred dir (None) differ in media type."
+    },
+    {
+      "pred_dir": "out/heads_in_dist_eval/in_dist",
+      "error": "[Errno 2] No such file or directory: 'out/heads_in_dist_eval/in_dist'"
+    }
+  ],
+  "total_evaluated": 4
+}

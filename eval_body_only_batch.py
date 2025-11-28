@@ -72,6 +72,22 @@ def parse_args() -> argparse.Namespace:
         default=["in_dist", "ood"],
         help="Which subfolders under input_root to evaluate.",
     )
+    parser.add_argument(
+        "--include",
+        nargs="+",
+        default=None,
+        help="Optional list of filename stems to process.",
+    )
+    parser.add_argument(
+        "--include_file",
+        default=None,
+        help="Optional text file (one stem per line) specifying which inputs to process.",
+    )
+    parser.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip rendering if the output mp4 already exists.",
+    )
     return parser.parse_args()
 
 
@@ -136,9 +152,24 @@ def main() -> None:
     pipe = build_pipeline(args.device, args.lora_path, args.lora_alpha)
     print(f"Loaded pipeline with LoRA: {args.lora_path}")
 
+    include_set = set()
+    if args.include:
+        include_set.update(args.include)
+    if args.include_file:
+        file_path = Path(args.include_file)
+        if not file_path.is_file():
+            raise SystemExit(f"include_file not found: {file_path}")
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    include_set.add(line)
+
     for split in args.splits:
         split_dir = input_root / split
         images = list_images(split_dir)
+        if include_set:
+            images = [img for img in images if img.stem in include_set]
         if not images:
             print(f"[skip] No images found in {split_dir}")
             continue
@@ -149,6 +180,10 @@ def main() -> None:
 
         for idx, img_path in enumerate(images):
             input_image = load_image_fit(img_path, target_w=args.width, target_h=args.height)
+            out_path = split_out / f"{img_path.stem}.mp4"
+            if args.skip_existing and out_path.exists():
+                print(f"[{split}] [skip-existing] {out_path}")
+                continue
             video = pipe(
                 prompt=args.prompt,
                 negative_prompt=args.negative_prompt,
@@ -160,7 +195,6 @@ def main() -> None:
                 tiled=args.tiled,
             )
 
-            out_path = split_out / f"{img_path.stem}.mp4"
             save_video(video, str(out_path), fps=args.fps, quality=args.quality)
             print(f"[{split}] [{idx + 1}/{len(images)}] Saved {out_path}")
 

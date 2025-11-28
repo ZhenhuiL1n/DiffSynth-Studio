@@ -216,6 +216,7 @@ def compute_metrics_video_pair(
     pred_path: str | Path,
     bundle: Optional[MetricBundle] = None,
     num_frames: int = 49,
+    force_size: Optional[Tuple[int, int]] = None,
 ) -> Tuple[Dict[str, float], int]:
     """Compute metrics for two videos by averaging frame-level scores."""
     gt_frames = read_video_frames(gt_path, max_frames=num_frames)
@@ -223,6 +224,13 @@ def compute_metrics_video_pair(
     usable = min(len(gt_frames), len(pr_frames), num_frames)
     if usable == 0:
         raise RuntimeError(f"Could not decode overlapping frames for {gt_path} vs {pred_path}")
+
+    if force_size is not None:
+        gt_frames = [resize_to(frame, force_size) for frame in gt_frames[:usable]]
+        pr_frames = [resize_to(frame, force_size) for frame in pr_frames[:usable]]
+    else:
+        gt_frames = gt_frames[:usable]
+        pr_frames = pr_frames[:usable]
 
     if bundle is None:
         bundle = MetricBundle()
@@ -295,6 +303,7 @@ def _evaluate_video_folders(
     pred_dir: Path,
     save_csv: Optional[str | Path] = None,
     num_frames: int = 49,
+    force_size: Optional[Tuple[int, int]] = None,
 ) -> Dict[str, float]:
     print("gt dir:", gt_dir, "pred dir:", pred_dir)
     pairs = _pair_by_stem(gt_dir, pred_dir, VIDEO_EXTS)
@@ -305,7 +314,13 @@ def _evaluate_video_folders(
     bundle = MetricBundle()
     rows = []
     for gt_p, pr_p in tqdm(pairs, desc=f"Videos {pred_dir.name}", leave=False):
-        metrics, used_frames = compute_metrics_video_pair(gt_p, pr_p, bundle=bundle, num_frames=num_frames)
+        metrics, used_frames = compute_metrics_video_pair(
+            gt_p,
+            pr_p,
+            bundle=bundle,
+            num_frames=num_frames,
+            force_size=force_size,
+        )
         rows.append({
             "name": pr_p.stem,
             "gt": str(gt_p.name),
@@ -337,6 +352,7 @@ def evaluate_folders(
     pred_dir: str | Path,
     save_csv: Optional[str | Path] = None,
     num_frames: int = 49,
+    force_size: Optional[Tuple[int, int]] = None,
 ) -> Dict[str, float]:
     """Evaluate matched pairs (images or videos) in two folders and optionally write a CSV."""
     gt_dir, pred_dir = Path(gt_dir), Path(pred_dir)
@@ -350,7 +366,13 @@ def evaluate_folders(
     if media_type == "image":
         return _evaluate_image_folders(gt_dir, pred_dir, save_csv=save_csv)
     if media_type == "video":
-        return _evaluate_video_folders(gt_dir, pred_dir, save_csv=save_csv, num_frames=num_frames)
+        return _evaluate_video_folders(
+            gt_dir,
+            pred_dir,
+            save_csv=save_csv,
+            num_frames=num_frames,
+            force_size=force_size,
+        )
     raise RuntimeError(f"Unsupported media type: {media_type}")
 
 
@@ -364,16 +386,36 @@ if __name__ == "__main__":
     ap.add_argument("--pred", required=True, help="Prediction image or folder")
     ap.add_argument("--csv", default=None, help="Optional CSV path for per-sample metrics")
     ap.add_argument("--num_frames", type=int, default=49, help="Max frames per video when evaluating mp4s.")
+    ap.add_argument(
+        "--force_size",
+        type=int,
+        nargs=2,
+        metavar=("HEIGHT", "WIDTH"),
+        default=None,
+        help="Optional height/width to resize both GT and prediction frames before computing metrics.",
+    )
     args = ap.parse_args()
 
     gt_path, pred_path = Path(args.gt), Path(args.pred)
+    force_size = tuple(args.force_size) if args.force_size else None
 
     if gt_path.is_dir() and pred_path.is_dir():
-        summary = evaluate_folders(gt_path, pred_path, save_csv=args.csv, num_frames=args.num_frames)
+        summary = evaluate_folders(
+            gt_path,
+            pred_path,
+            save_csv=args.csv,
+            num_frames=args.num_frames,
+            force_size=force_size,
+        )
         print(json.dumps({"mode": "folder", "summary": summary}, indent=2))
     elif gt_path.is_file() and pred_path.is_file():
         if gt_path.suffix.lower() in VIDEO_EXTS:
-            res, frames_used = compute_metrics_video_pair(gt_path, pred_path, num_frames=args.num_frames)
+            res, frames_used = compute_metrics_video_pair(
+                gt_path,
+                pred_path,
+                num_frames=args.num_frames,
+                force_size=force_size,
+            )
             print(json.dumps({"mode": "video_pair", "frames": frames_used, "metrics": res}, indent=2))
         else:
             res = compute_metrics_pair(gt_path, pred_path)

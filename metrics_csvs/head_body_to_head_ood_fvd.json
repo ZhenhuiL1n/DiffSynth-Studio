@@ -1,0 +1,5 @@
+{
+  "pred": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/out/head_body_to_head_eval/ood",
+  "gt": "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/baseline_results/GT/head",
+  "FVD": 62.30966575363806
+}

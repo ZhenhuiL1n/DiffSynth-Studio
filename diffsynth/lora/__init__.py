@@ -39,6 +39,9 @@ class GeneralLoRALoader:
                 else:
                     weight_lora = alpha * torch.mm(weight_up, weight_down)
                 state_dict = module.state_dict()
+                if "weight" not in state_dict:
+                    print(f"[LoRA] Skip {name}: no 'weight' parameter to update.")
+                    continue
                 state_dict["weight"] = state_dict["weight"].to(device=self.device, dtype=self.torch_dtype) + weight_lora
                 module.load_state_dict(state_dict)
                 updated_num += 1
