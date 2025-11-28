@@ -594,7 +594,15 @@ def launch_training_task(
                     loss = model({}, inputs=data)
                 else:
                     loss = model(data)
+                # breakpoint()
                 accelerator.backward(loss)
+                
+                # import numpy as np
+                # total_grad_student = torch.sqrt(sum([(p.grad**2).sum() for p in model.pipe.dit.parameters()if p.grad is not None])).item()
+                # total_grad_teacher = np.sqrt(sum([(p.grad**2).sum() for p in model.pipe.teacher.teacher.dit.parameters()if p.grad is not None])).item()
+                # print(f"Grad Student: {total_grad_student}, Grad Teacher: {total_grad_teacher}")
+                # breakpoint()
+                
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps)
                 scheduler.step()

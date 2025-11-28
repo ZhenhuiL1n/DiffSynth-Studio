@@ -6,7 +6,7 @@ from diffsynth.trainers.unified_dataset import UnifiedDataset, LoadVideo, ImageC
 from pathlib import Path
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
+from diffsynth.pipelines.wan_kd_mixin import WanKDMixin
 
 class WanTrainingModule(DiffusionTrainingModule):
     def __init__(
@@ -25,6 +25,25 @@ class WanTrainingModule(DiffusionTrainingModule):
         model_configs = self.parse_model_configs(model_paths, model_id_with_origin_paths, enable_fp8_training=False)
         self.pipe = WanVideoPipeline.from_pretrained(torch_dtype=torch.bfloat16, device="cpu", model_configs=model_configs)
         
+        kd = True
+        if kd:
+            # Load teacher model (assumed to be WAN Video Face)
+            from copy import deepcopy
+            self.teacher_model = deepcopy(self.pipe).eval()
+            for param in self.teacher_model.dit.parameters():
+                param.requires_grad = False
+            # teacher_pipe = WanKDMixin()
+            # teacher_pipe.attach_teacher(teacher_model)
+            self.pipe.enable_kd_training(None)
+            student_weights_path = "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/805/DiffSynth-Studio/models/train/805_baseline_bodyonly/epoch-5.safetensors"
+            teacher_weights_path = "/home/longnhat/Lin_workspace/8TB2/Lin/801_Project/DiffSynth-Studio/models/train/805_baseline_teacher_weights/epoch-5.safetensors" # the same, just copy 
+            self.teacher_model.load_lora(self.teacher_model.dit, str(teacher_weights_path), alpha=1)
+            print(f"Loaded teacher weights from {teacher_weights_path}")
+            self.pipe.load_lora(self.pipe.dit, str(student_weights_path), alpha=1)
+            print(f"Initialized student weights from teacher weights {teacher_weights_path}")
+            
+            self.teacher_device = torch.device("cuda:1")
+            # self.teacher_model.to(self.teacher_device)
         # # enable IP-Adapter (use SDXL projector weights -> 1280 dims)
         # self.pipe.enable_ipadapter(
         #     clip_vision_model="openai/clip-vit-large-patch14",
@@ -32,18 +51,19 @@ class WanTrainingModule(DiffusionTrainingModule):
         #     num_tokens=16,
         #     scale=0.6,   # 0.3–0.8 typical; tune per dataset
         # )
-        self.pipe.enable_ipadapter_context(
-            clip_vision_model="openai/clip-vit-large-patch14",
-            ipadapter_weight_path="models/IpAdapter/sdxl/ip-adapter_sdxl.safetensors",
-            num_tokens=16,
-            scale=0.6,
-        )
+        # self.pipe.enable_ipadapter_context(
+        #     clip_vision_model="openai/clip-vit-large-patch14",
+        #     ipadapter_weight_path="models/IpAdapter/sdxl/ip-adapter_sdxl.safetensors",
+        #     num_tokens=16,
+        #     scale=0.6,
+        # )
         # Training mode
         self.switch_pipe_to_training_mode(
             self.pipe, trainable_models,
             lora_base_model, lora_target_modules, lora_rank, lora_checkpoint=lora_checkpoint,
             enable_fp8_training=False,
         )
+            
         
         # Store other configs
         self.use_gradient_checkpointing = use_gradient_checkpointing
@@ -95,11 +115,61 @@ class WanTrainingModule(DiffusionTrainingModule):
             inputs_shared, inputs_posi, inputs_nega = self.pipe.unit_runner(unit, self.pipe, inputs_shared, inputs_posi, inputs_nega)
         return {**inputs_shared, **inputs_posi}
     
+    @torch.no_grad()
+    def _to_teachers_device(self, inputs):
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                inputs[k] = v.to(self.teacher_device, non_blocking=True)
+            if isinstance(v, dict):
+                inputs[k] = self._to_teachers_device(v)
+            if isinstance(v, list):
+                inputs[k] = [item.to(self.teacher_device, non_blocking=True) if isinstance(item, torch.Tensor) else item for item in v]
+        return inputs
+    
+    @torch.no_grad()
+    def kd_forward(self, inputs, timestep, kd_gate=None):
+        # breakpoint()
+        if self.teacher_model.device != self.teacher_device:
+            self.teacher_model.to(self.teacher_device)
+            torch.cuda.empty_cache()
+            
+        orig_device = inputs["latents"].device
+        inputs_teacher = self._to_teachers_device(inputs)
+        timestep = timestep.to(self.teacher_device)
+        # max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * self.teacher_model.scheduler.num_train_timesteps)
+        # min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * self.teacher_model.scheduler.num_train_timesteps)
+        # timestep_id = torch.randint(min_timestep_boundary, max_timestep_boundary, (1,))
+        # timestep = self.teacher_model.scheduler.timesteps[timestep_id].to(dtype=self.torch_dtype, device=self.device)
+        # breakpoint()
+        inputs["latents"] = self.teacher_model.scheduler.add_noise(inputs["input_latents"], inputs["noise"], timestep)
+        # training_target = self.scheduler.training_target(inputs["input_latents"], inputs["noise"], timestep)
+        tgt_full = self.teacher_model.scheduler.training_target(inputs["input_latents"], inputs["noise"], timestep)
+        pred_teacher = self.teacher_model.model_fn(dit = self.teacher_model.dit, **inputs, timestep=timestep,)
+
+        pred_teacher = pred_teacher.to(orig_device, non_blocking=True)
+
+        if kd_gate is not None:
+            pred_teacher = pred_teacher * kd_gate.view(-1, 1, 1, 1, 1)
+        return pred_teacher
     
     def forward(self, data, inputs=None):
+        # breakpoint()
         if inputs is None: inputs = self.forward_preprocess(data)
         models = {name: getattr(self.pipe, name) for name in self.pipe.in_iteration_models}
-        loss = self.pipe.training_loss(**models, **inputs)
+        if hasattr(self, "teacher_model"):
+            # self.pipe.teacher = self.teacher_model
+            loss, student_pred, timestep_t = self.pipe.training_loss(**models, **inputs)
+            pred_teacher = self.kd_forward(inputs, timestep_t, kd_gate=None)
+            # kd_loss = torch.nn.functional.mse_loss(student_pred.float(), pred_teacher.float())
+            # kd_loss = torch.nn.functional.mse_loss(student_pred.float(), pred_teacher.float())
+            kd_loss = torch.nn.functional.kl_div(torch.log_softmax(student_pred, dim=1), torch.log_softmax(pred_teacher, dim=1), reduction='batchmean',log_target=True,) # this is superbig idk why
+            if kd_loss.isnan().any() or kd_loss.isinf().any() or kd_loss.item() == 0:
+                print(f"Warning: invalid KD loss encountered, {kd_loss.item()=}; skipping KD loss for this step.")
+            loss = loss + 0.02 * kd_loss
+            
+        else:    
+            loss = self.pipe.training_loss(**models, **inputs)
+        
         return loss
 
 
@@ -156,4 +226,5 @@ if __name__ == "__main__":
         eval_data=args.eval_data,
         eval_data_kwargs=eval_data_kwargs,
     )
+    # breakpoint()
     launch_training_task(dataset, model, model_logger, args=args)
