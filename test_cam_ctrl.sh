@@ -1,0 +1,1 @@
+python examples/flux2/model_inference/FLUX.2-klein-camera-adapter-inference.py   --input_image data/0008_01/frame_0/rgb/view_0016_az160.0_el0.0.png   --camera_adapter_path models/train/FLUX.2-klein-9B-camera-adapter/epoch-0.safetensors   --prompt "a woman in traditional Chinese hanfu dress, black background"   --delta_azimuth 40   --output test_40deg.png

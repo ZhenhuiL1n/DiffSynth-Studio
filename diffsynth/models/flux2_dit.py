@@ -669,6 +669,7 @@ class Flux2SingleTransformerBlock(nn.Module):
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         split_hidden_states: bool = False,
         text_seq_len: Optional[int] = None,
+        camera_adapter_kwargs: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # If encoder_hidden_states is None, hidden_states is assumed to have encoder_hidden_states already
         # concatenated
@@ -687,6 +688,23 @@ class Flux2SingleTransformerBlock(nn.Module):
             image_rotary_emb=image_rotary_emb,
             **joint_attention_kwargs,
         )
+
+        # Camera adapter injection (decoupled cross-attention)
+        if camera_adapter_kwargs is not None:
+            cam_k = camera_adapter_kwargs["cam_k"]
+            cam_v = camera_adapter_kwargs["cam_v"]
+            scale = camera_adapter_kwargs.get("scale", 1.0)
+            if scale is None:
+                scale = 1.0
+            batch_size, num_tokens = attn_output.shape[0:2]
+            # Extract q from the fused qkv projection for camera cross-attention
+            qkv = self.attn.to_qkv_mlp_proj(norm_hidden_states)
+            q = qkv[..., :self.attn.inner_dim]
+            q = q.unflatten(-1, (self.attn.heads, -1)).transpose(1, 2)  # (B, H, S, D)
+            q = self.attn.norm_q(q)
+            cam_hidden = torch.nn.functional.scaled_dot_product_attention(q, cam_k, cam_v)
+            cam_hidden = cam_hidden.transpose(1, 2).reshape(batch_size, num_tokens, -1)
+            attn_output = attn_output + scale * cam_hidden
 
         hidden_states = hidden_states + mod_gate * attn_output
         if hidden_states.dtype == torch.float16:
@@ -742,6 +760,7 @@ class Flux2TransformerBlock(nn.Module):
         temb_mod_params_txt: Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], ...],
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+        camera_adapter_kwargs: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         joint_attention_kwargs = joint_attention_kwargs or {}
 
@@ -766,6 +785,21 @@ class Flux2TransformerBlock(nn.Module):
         )
 
         attn_output, context_attn_output = attention_outputs
+
+        # Camera adapter injection on image stream (decoupled cross-attention)
+        if camera_adapter_kwargs is not None:
+            cam_k = camera_adapter_kwargs["cam_k"]
+            cam_v = camera_adapter_kwargs["cam_v"]
+            scale = camera_adapter_kwargs.get("scale", 1.0)
+            if scale is None:
+                scale = 1.0
+            batch_size, num_tokens = attn_output.shape[0:2]
+            q = self.attn.to_q(norm_hidden_states)
+            q = q.unflatten(-1, (self.attn.heads, -1)).transpose(1, 2)  # (B, H, S, D)
+            q = self.attn.norm_q(q)
+            cam_hidden = torch.nn.functional.scaled_dot_product_attention(q, cam_k, cam_v)
+            cam_hidden = cam_hidden.transpose(1, 2).reshape(batch_size, num_tokens, -1)
+            attn_output = attn_output + scale * cam_hidden
 
         # Process attention outputs for the image stream (`hidden_states`).
         attn_output = gate_msa * attn_output
@@ -971,6 +1005,7 @@ class Flux2DiT(torch.nn.Module):
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         use_gradient_checkpointing=False,
         use_gradient_checkpointing_offload=False,
+        camera_adapter_kwargs: Optional[Dict[int, Dict[str, torch.Tensor]]] = None,
     ):
         # 0. Handle input arguments
         if joint_attention_kwargs is not None:
@@ -1014,6 +1049,7 @@ class Flux2DiT(torch.nn.Module):
 
         # 4. Double Stream Transformer Blocks
         for index_block, block in enumerate(self.transformer_blocks):
+            block_cam_kwargs = camera_adapter_kwargs.get(index_block) if camera_adapter_kwargs is not None else None
             encoder_hidden_states, hidden_states = gradient_checkpoint_forward(
                 block,
                 use_gradient_checkpointing=use_gradient_checkpointing,
@@ -1024,12 +1060,15 @@ class Flux2DiT(torch.nn.Module):
                 temb_mod_params_txt=double_stream_mod_txt,
                 image_rotary_emb=concat_rotary_emb,
                 joint_attention_kwargs=joint_attention_kwargs,
+                camera_adapter_kwargs=block_cam_kwargs,
             )
         # Concatenate text and image streams for single-block inference
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
 
         # 5. Single Stream Transformer Blocks
+        num_double = len(self.transformer_blocks)
         for index_block, block in enumerate(self.single_transformer_blocks):
+            block_cam_kwargs = camera_adapter_kwargs.get(num_double + index_block) if camera_adapter_kwargs is not None else None
             hidden_states = gradient_checkpoint_forward(
                 block,
                 use_gradient_checkpointing=use_gradient_checkpointing,
@@ -1039,6 +1078,7 @@ class Flux2DiT(torch.nn.Module):
                 temb_mod_params=single_stream_mod,
                 image_rotary_emb=concat_rotary_emb,
                 joint_attention_kwargs=joint_attention_kwargs,
+                camera_adapter_kwargs=block_cam_kwargs,
             )
         # Remove text tokens from concatenated stream
         hidden_states = hidden_states[:, num_txt_tokens:, ...]

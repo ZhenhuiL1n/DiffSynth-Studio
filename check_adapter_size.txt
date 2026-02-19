@@ -1,0 +1,15 @@
+
+```
+conda run -n diffsynth python -c "
+from safetensors.torch import load_file
+from collections import defaultdict
+p='models/train/FLUX.2-klein-9B-camera-adapter/epoch-10.safetensors'
+sd=load_file(p)
+print('tensors', len(sd))
+print('params', sum(v.numel() for v in sd.values()))
+by=defaultdict(int)
+for k,v in sd.items():
+    by['adapter_modules' if k.startswith('adapter_modules.') else 'camera_encoder' if k.startswith('camera_encoder.') else 'other'] += v.numel()
+print(dict(by))
+"
+```

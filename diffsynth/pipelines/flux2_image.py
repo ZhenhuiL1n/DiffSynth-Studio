@@ -16,6 +16,7 @@ from ..models.flux2_text_encoder import Flux2TextEncoder
 from ..models.flux2_dit import Flux2DiT
 from ..models.flux2_vae import Flux2VAE
 from ..models.z_image_text_encoder import ZImageTextEncoder
+from ..models.flux2_camera_adapter import Flux2CameraAdapter
 
 
 class Flux2ImagePipeline(BasePipeline):
@@ -30,6 +31,7 @@ class Flux2ImagePipeline(BasePipeline):
         self.text_encoder_qwen3: ZImageTextEncoder = None
         self.dit: Flux2DiT = None
         self.vae: Flux2VAE = None
+        self.camera_adapter: Flux2CameraAdapter = None
         self.tokenizer: AutoProcessor = None
         self.in_iteration_models = ("dit",)
         self.units = [
@@ -40,6 +42,7 @@ class Flux2ImagePipeline(BasePipeline):
             Flux2Unit_InputImageEmbedder(),
             Flux2Unit_EditImageEmbedder(),
             Flux2Unit_ImageIDs(),
+            Flux2Unit_CameraAdapter(),
         ]
         self.model_fn = model_fn_flux2
     
@@ -61,6 +64,7 @@ class Flux2ImagePipeline(BasePipeline):
         pipe.text_encoder_qwen3 = model_pool.fetch_model("z_image_text_encoder")
         pipe.dit = model_pool.fetch_model("flux2_dit")
         pipe.vae = model_pool.fetch_model("flux2_vae")
+        pipe.camera_adapter = model_pool.fetch_model("flux2_camera_adapter")
         if tokenizer_config is not None:
             tokenizer_config.download_if_necessary()
             pipe.tokenizer = AutoTokenizer.from_pretrained(tokenizer_config.path)
@@ -92,6 +96,10 @@ class Flux2ImagePipeline(BasePipeline):
         rand_device: str = "cpu",
         # Steps
         num_inference_steps: int = 30,
+        # Camera adapter
+        camera_azimuth: float = None,
+        camera_elevation: float = None,
+        camera_scale: float = 1.0,
         # Progress bar
         progress_bar_cmd = tqdm,
     ):
@@ -111,6 +119,7 @@ class Flux2ImagePipeline(BasePipeline):
             "height": height, "width": width,
             "seed": seed, "rand_device": rand_device,
             "num_inference_steps": num_inference_steps,
+            "camera_azimuth": camera_azimuth, "camera_elevation": camera_elevation, "camera_scale": camera_scale,
         }
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
@@ -566,6 +575,7 @@ def model_fn_flux2(
     image_ids=None,
     edit_latents=None,
     edit_image_ids=None,
+    camera_adapter_kwargs=None,
     use_gradient_checkpointing=False,
     use_gradient_checkpointing_offload=False,
     **kwargs,
@@ -585,6 +595,36 @@ def model_fn_flux2(
         img_ids=image_ids,
         use_gradient_checkpointing=use_gradient_checkpointing,
         use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+        camera_adapter_kwargs=camera_adapter_kwargs,
     )
     model_output = model_output[:, :image_seq_len]
     return model_output
+
+
+class Flux2Unit_CameraAdapter(PipelineUnit):
+    """Pipeline unit that processes camera parameters through the camera adapter."""
+    def __init__(self):
+        super().__init__(
+            input_params=("camera_azimuth", "camera_elevation", "camera_scale"),
+            output_params=("camera_adapter_kwargs",),
+            onload_model_names=("camera_adapter",)
+        )
+
+    def process(self, pipe: Flux2ImagePipeline, camera_azimuth, camera_elevation, camera_scale):
+        if camera_azimuth is None or camera_elevation is None:
+            return {}
+        if pipe.camera_adapter is None:
+            return {}
+        if camera_scale is None:
+            camera_scale = 1.0
+        camera_scale = float(camera_scale)
+        pipe.load_models_to_device(self.onload_model_names)
+        import math
+        camera_params = torch.tensor([[
+            math.sin(math.radians(camera_azimuth)),
+            math.cos(math.radians(camera_azimuth)),
+            math.sin(math.radians(camera_elevation)),
+            math.cos(math.radians(camera_elevation)),
+        ]], dtype=pipe.torch_dtype, device=pipe.device)
+        camera_adapter_kwargs = pipe.camera_adapter(camera_params, scale=camera_scale)
+        return {"camera_adapter_kwargs": camera_adapter_kwargs}

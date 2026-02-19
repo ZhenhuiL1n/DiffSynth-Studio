@@ -532,6 +532,12 @@ flux2_series = [
         "model_class": "diffsynth.models.flux2_dit.Flux2DiT",
         "extra_kwargs": {"guidance_embeds": False, "joint_attention_dim": 12288, "num_attention_heads": 32, "num_layers": 8, "num_single_layers": 24}
     },
+    {
+        # Camera adapter for FLUX.2-klein (trained, not pretrained - placeholder hash)
+        "model_hash": "camera_adapter_placeholder_hash",
+        "model_name": "flux2_camera_adapter",
+        "model_class": "diffsynth.models.flux2_camera_adapter.Flux2CameraAdapter",
+    },
 ]
 
 z_image_series = [
