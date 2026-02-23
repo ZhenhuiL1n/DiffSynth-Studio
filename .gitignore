@@ -178,3 +178,4 @@ cython_debug/
 # data related
 data/
 images/
+outputs/
