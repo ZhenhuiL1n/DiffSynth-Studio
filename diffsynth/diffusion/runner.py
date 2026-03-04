@@ -23,21 +23,36 @@ def launch_training_task(
         num_workers = args.dataset_num_workers
         save_steps = args.save_steps
         num_epochs = args.num_epochs
+        batch_size = args.batch_size
+    else:
+        batch_size = 1
     
     optimizer = torch.optim.AdamW(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
-    dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        shuffle=True,
+        batch_size=batch_size,
+        collate_fn=lambda x: x,
+        num_workers=num_workers,
+    )
     model.to(device=accelerator.device)
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
-        for data in tqdm(dataloader):
+        for data_batch in tqdm(dataloader):
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
-                if dataset.load_from_cache:
-                    loss = model({}, inputs=data)
-                else:
-                    loss = model(data)
+                if not isinstance(data_batch, list):
+                    data_batch = [data_batch]
+                losses = []
+                for data in data_batch:
+                    if dataset.load_from_cache:
+                        loss_i = model({}, inputs=data)
+                    else:
+                        loss_i = model(data)
+                    losses.append(loss_i)
+                loss = torch.stack(losses).mean()
                 accelerator.backward(loss)
                 optimizer.step()
                 current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, "get_last_lr") else learning_rate

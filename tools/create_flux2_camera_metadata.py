@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 
-VIEW_RE = re.compile(r"^view_(\d+)_az(-?\d+(?:\.\d+)?)_el(-?\d+(?:\.\d+)?)\.png$")
+VIEW_RE = re.compile(
+    r"^view_(\d+)_az(-?\d+(?:\.\d+)?)_el(-?\d+(?:\.\d+)?)\.(?:png|webp|jpg|jpeg)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -73,6 +76,9 @@ def evenly_sample(items: Sequence[Path], k: int) -> List[Path]:
     n = len(items)
     if n == 0:
         return []
+    if k == 1:
+        # Single-frame overfit/debug mode: choose the first frame deterministically.
+        return [items[0]]
     if k >= n:
         return list(items)
 
@@ -98,6 +104,12 @@ def evenly_sample(items: Sequence[Path], k: int) -> List[Path]:
         indices.sort()
 
     return [items[i] for i in indices[:k]]
+
+
+def first_k(items: Sequence[Path], k: int) -> List[Path]:
+    if k <= 0:
+        raise ValueError("k must be positive")
+    return list(items[:k])
 
 
 def load_views(rgb_dir: Path) -> List[ViewEntry]:
@@ -163,10 +175,23 @@ def main() -> None:
     )
     parser.add_argument("--frames_per_folder", type=int, default=20, help="Evenly sampled frame count per sequence")
     parser.add_argument(
+        "--frame_sampling",
+        type=str,
+        default="evenly",
+        choices=["evenly", "first"],
+        help="How to pick frames inside each sequence: evenly or first K frames",
+    )
+    parser.add_argument(
         "--angles",
         type=str,
         default="0,40,90,130,180,220,270,310,360",
         help="Comma-separated relative azimuth angles in degrees",
+    )
+    parser.add_argument(
+        "--elevations",
+        type=str,
+        default="0",
+        help="Comma-separated absolute target elevations in degrees",
     )
     parser.add_argument(
         "--base_azimuth",
@@ -191,6 +216,7 @@ def main() -> None:
 
     folders = parse_folder_list(args.folders)
     rel_angles = parse_angles(args.angles)
+    target_elevations = parse_angles(args.elevations)
 
     rows: List[Dict[str, str]] = []
 
@@ -200,7 +226,10 @@ def main() -> None:
             raise FileNotFoundError(f"Missing sequence folder: {seq_dir}")
 
         all_frames = list_frames(seq_dir)
-        sampled_frames = evenly_sample(all_frames, args.frames_per_folder)
+        if args.frame_sampling == "first":
+            sampled_frames = first_k(all_frames, args.frames_per_folder)
+        else:
+            sampled_frames = evenly_sample(all_frames, args.frames_per_folder)
         if len(sampled_frames) != args.frames_per_folder:
             raise RuntimeError(
                 f"Expected {args.frames_per_folder} sampled frames for {folder}, got {len(sampled_frames)}"
@@ -213,35 +242,38 @@ def main() -> None:
 
             views = load_views(rgb_dir)
             if not views:
-                raise RuntimeError(f"No view_*.png found in {rgb_dir}")
+                raise RuntimeError(f"No view_*.{{png,webp,jpg,jpeg}} found in {rgb_dir}")
 
             source = find_source_view(views, args.base_azimuth, args.base_elevation)
 
             for rel_angle in rel_angles:
                 target_abs_az = normalize_az(args.base_azimuth + rel_angle)
-                target = choose_target_view(views, target_abs_az, args.base_elevation)
+                for target_el in target_elevations:
+                    target = choose_target_view(views, target_abs_az, target_el)
+                    delta_el = target.elevation - source.elevation
 
-                rows.append(
-                    {
-                        # Training columns
-                        "image": relpath_str(target.path, args.data_root),
-                        "edit_image": relpath_str(source.path, args.data_root),
-                        "prompt": args.prompt,
-                        # Camera labels (delta mode preferred)
-                        "camera_delta_azimuth": f"{rel_angle:.4f}",
-                        "camera_delta_elevation": "0.0000",
-                        # Extra debug / traceability columns
-                        "sequence_id": folder,
-                        "frame_id": frame_dir.name,
-                        "source_azimuth": f"{source.azimuth:.4f}",
-                        "source_elevation": f"{source.elevation:.4f}",
-                        "target_azimuth": f"{target.azimuth:.4f}",
-                        "target_elevation": f"{target.elevation:.4f}",
-                        "target_rel_azimuth_request": f"{rel_angle:.4f}",
-                        "source_view_file": source.path.name,
-                        "target_view_file": target.path.name,
-                    }
-                )
+                    rows.append(
+                        {
+                            # Training columns
+                            "image": relpath_str(target.path, args.data_root),
+                            "edit_image": relpath_str(source.path, args.data_root),
+                            "prompt": args.prompt,
+                            # Camera labels (delta mode preferred)
+                            "camera_delta_azimuth": f"{rel_angle:.4f}",
+                            "camera_delta_elevation": f"{delta_el:.4f}",
+                            # Extra debug / traceability columns
+                            "sequence_id": folder,
+                            "frame_id": frame_dir.name,
+                            "source_azimuth": f"{source.azimuth:.4f}",
+                            "source_elevation": f"{source.elevation:.4f}",
+                            "target_azimuth": f"{target.azimuth:.4f}",
+                            "target_elevation": f"{target.elevation:.4f}",
+                            "target_rel_azimuth_request": f"{rel_angle:.4f}",
+                            "target_abs_elevation_request": f"{target_el:.4f}",
+                            "source_view_file": source.path.name,
+                            "target_view_file": target.path.name,
+                        }
+                    )
 
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0].keys()) if rows else []
@@ -251,7 +283,7 @@ def main() -> None:
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} rows to {args.output_csv}")
-    expected = len(folders) * args.frames_per_folder * len(rel_angles)
+    expected = len(folders) * args.frames_per_folder * len(rel_angles) * len(target_elevations)
     print(f"Expected rows: {expected}")
 
 

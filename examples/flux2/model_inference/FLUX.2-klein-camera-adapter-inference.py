@@ -1,6 +1,6 @@
 import argparse
 import torch
-from diffsynth import ModelConfig
+from diffsynth import ModelConfig, load_state_dict
 import numpy as np
 import torch.nn.functional as F
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, Flux2Unit_NoiseInitializer
@@ -107,6 +107,19 @@ def main():
     parser.add_argument("--target_elevation", type=float, default=None, help="Target elevation in degrees")
 
     parser.add_argument("--camera_scale", type=float, default=1.0, help="Camera adapter strength")
+    parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-free guidance scale")
+    parser.add_argument(
+        "--embedded_guidance",
+        type=float,
+        default=1.0,
+        help="Embedded guidance scale (set 1.0 to match camera-adapter training setup)",
+    )
+    parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default="",
+        help="Negative prompt for suppressing artifacts",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument("--steps", type=int, default=4, help="Number of inference steps (4 for distilled, 50 for base)")
     parser.add_argument("--model_size", type=str, default="9B", choices=["4B", "9B"], help="Model size")
@@ -117,6 +130,31 @@ def main():
     parser.add_argument("--depth_noise_modulation", type=float, default=1.0, help="Depth modulation strength before blend")
     parser.add_argument("--depth_noise_invert", action="store_true", help="Invert depth map before creating structured noise")
     parser.add_argument("--depth_model_path", type=str, default="models/Annotators", help="Local controlnet_aux annotator model path")
+    parser.add_argument(
+        "--finetune_checkpoint",
+        type=str,
+        default=None,
+        help="Optional mixed training checkpoint (e.g., camera_adapter+dit) to apply on top of base model.",
+    )
+    parser.add_argument(
+        "--allow_partial_finetune_load",
+        action="store_true",
+        help="Allow missing/unexpected keys when applying finetune checkpoint overrides.",
+    )
+    parser.add_argument(
+        "--override_camera_from_finetune",
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help="Whether to apply camera-adapter weights from finetune checkpoint (1=yes, 0=no).",
+    )
+    parser.add_argument(
+        "--override_dit_from_finetune",
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help="Whether to apply DiT weights from finetune checkpoint (1=yes, 0=no).",
+    )
     args = parser.parse_args()
 
     camera_azimuth, camera_elevation, camera_source = resolve_camera_condition(args)
@@ -142,6 +180,65 @@ def main():
         ],
         tokenizer_config=ModelConfig(model_id=text_encoder_id, origin_file_pattern="tokenizer/"),
     )
+
+    def apply_finetune_overrides(ckpt_path: str):
+        state_dict = load_state_dict(
+            ckpt_path,
+            torch_dtype=pipe.torch_dtype,
+            device="cpu",
+        )
+        dit_state = {}
+        cam_state = {}
+        for key, value in state_dict.items():
+            if key.startswith("pipe.dit."):
+                dit_state[key[len("pipe.dit."):]] = value
+            elif key.startswith("dit."):
+                dit_state[key[len("dit."):]] = value
+
+            if key.startswith("pipe.camera_adapter."):
+                cam_state[key[len("pipe.camera_adapter."):]] = value
+            elif key.startswith("camera_adapter."):
+                cam_state[key[len("camera_adapter."):]] = value
+            elif key.startswith("camera_encoder.") or key.startswith("adapter_modules."):
+                cam_state[key] = value
+
+        if args.override_camera_from_finetune == 1 and len(cam_state) > 0 and pipe.camera_adapter is not None:
+            cam_load = pipe.camera_adapter.load_state_dict(cam_state, strict=False)
+            print(
+                f"Applied camera adapter override from {ckpt_path}: "
+                f"keys={len(cam_state)}, missing={len(cam_load.missing_keys)}, unexpected={len(cam_load.unexpected_keys)}"
+            )
+            if (len(cam_load.missing_keys) > 0 or len(cam_load.unexpected_keys) > 0) and not args.allow_partial_finetune_load:
+                raise RuntimeError(
+                    "Camera adapter finetune override is not an exact load. "
+                    f"Missing={len(cam_load.missing_keys)} Unexpected={len(cam_load.unexpected_keys)}. "
+                    "Use --allow_partial_finetune_load only if this is intentional."
+                )
+        elif len(cam_state) > 0:
+            print("Skipped camera adapter override from finetune checkpoint (--override_camera_from_finetune=0).")
+
+        if args.override_dit_from_finetune == 1 and len(dit_state) > 0 and pipe.dit is not None:
+            dit_load = pipe.dit.load_state_dict(dit_state, strict=False)
+            print(
+                f"Applied DiT override from {ckpt_path}: "
+                f"keys={len(dit_state)}, missing={len(dit_load.missing_keys)}, unexpected={len(dit_load.unexpected_keys)}"
+            )
+            if (len(dit_load.missing_keys) > 0 or len(dit_load.unexpected_keys) > 0) and not args.allow_partial_finetune_load:
+                raise RuntimeError(
+                    "DiT finetune override is not an exact load. "
+                    f"Missing={len(dit_load.missing_keys)} Unexpected={len(dit_load.unexpected_keys)}. "
+                    "Use --allow_partial_finetune_load only if this is intentional."
+                )
+        elif len(dit_state) > 0:
+            print("Skipped DiT override from finetune checkpoint (--override_dit_from_finetune=0).")
+
+    # If user explicitly passes --finetune_checkpoint, use it.
+    if args.finetune_checkpoint is not None:
+        apply_finetune_overrides(args.finetune_checkpoint)
+    # Backward-compatible behavior: if camera_adapter_path itself is a mixed checkpoint
+    # (contains DiT keys), apply those DiT weights automatically.
+    else:
+        apply_finetune_overrides(args.camera_adapter_path)
 
     input_image = Image.open(args.input_image).convert("RGB")
 
@@ -175,6 +272,9 @@ def main():
 
     image = pipe(
         prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        cfg_scale=args.cfg_scale,
+        embedded_guidance=args.embedded_guidance,
         edit_image=input_image,
         camera_azimuth=camera_azimuth,
         camera_elevation=camera_elevation,

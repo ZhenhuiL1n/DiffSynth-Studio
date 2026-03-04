@@ -89,10 +89,32 @@ class ModelPool:
         # Detect them by key/shape signature and infer architecture (4B/9B) directly from the checkpoint.
         try:
             keys_dict = load_keys_dict(path)
+
+            def normalize_camera_key(key):
+                for prefix in ("pipe.camera_adapter.", "camera_adapter."):
+                    if key.startswith(prefix):
+                        key = key[len(prefix):]
+                        break
+                return key
+
+            def is_camera_key(key):
+                return key.startswith("camera_encoder.") or key.startswith("adapter_modules.")
+
+            # Mixed checkpoints can include other trainable modules (e.g., pipe.dit.*).
+            # Keep only camera-adapter keys for architecture detection/loading.
+            camera_keys_dict = {}
+            for key, shape in keys_dict.items():
+                norm_key = normalize_camera_key(key)
+                if is_camera_key(norm_key):
+                    camera_keys_dict[norm_key] = shape
+
+            if len(camera_keys_dict) == 0:
+                return False
+
             camera_adapter_class = self.import_model_class(
                 "diffsynth.models.flux2_camera_adapter.Flux2CameraAdapter"
             )
-            inferred_config = camera_adapter_class.infer_architecture_from_keys_dict(keys_dict)
+            inferred_config = camera_adapter_class.infer_architecture_from_keys_dict(camera_keys_dict)
             if inferred_config is None:
                 return False
 
@@ -104,21 +126,31 @@ class ModelPool:
             state_dict_ = state_dict
             if state_dict_ is None:
                 state_dict_ = load_state_dict(path, torch_dtype=vram_config.get("computation_dtype", torch.bfloat16), device=vram_config.get("computation_device", "cpu"))
+
+            camera_state_dict = {}
+            for key, value in state_dict_.items():
+                norm_key = normalize_camera_key(key)
+                if is_camera_key(norm_key):
+                    camera_state_dict[norm_key] = value
+
+            if len(camera_state_dict) == 0:
+                return False
+
             # Training checkpoints often contain only trainable params and may omit fixed buffers.
-            if "camera_encoder.fourier_freqs" not in state_dict_:
+            if "camera_encoder.fourier_freqs" not in camera_state_dict:
                 num_fourier = inferred_config.get("num_fourier_features", 64)
                 dtype = vram_config.get("computation_dtype", torch.bfloat16)
                 device = vram_config.get("computation_device", "cpu")
                 base = torch.arange(1, num_fourier + 1, dtype=dtype, device=device)
                 base = base / float(max(num_fourier, 1)) * 2.0
-                state_dict_["camera_encoder.fourier_freqs"] = base.unsqueeze(0).repeat(4, 1)
+                camera_state_dict["camera_encoder.fourier_freqs"] = base.unsqueeze(0).repeat(4, 1)
 
             model = self.load_model_file(
                 config,
                 path,
                 vram_config,
                 vram_limit=vram_limit,
-                state_dict=state_dict_,
+                state_dict=camera_state_dict,
             )
             self._append_loaded_model(
                 model,
